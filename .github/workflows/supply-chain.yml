@@ -1,0 +1,131 @@
+name: Supply Chain
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  dockerfile-lint:
+    name: Dockerfile lint (hadolint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile
+
+  iac-scan:
+    name: IaC scan (Trivy config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan Dockerfile and Kubernetes manifests for misconfigurations
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+  build-scan-sign:
+    name: Build, scan, SBOM, sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # Sigstore keyless signing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build container image (not pushed anywhere)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: skyhook:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Vulnerability scan (Trivy) — gate on CRITICAL/HIGH
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: skyhook:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Generate SBOM (Syft, SPDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          image: skyhook:${{ github.sha }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SBOM (Sigstore keyless)
+        run: |
+          cosign sign-blob --yes \
+            --bundle sbom.cosign.bundle \
+            sbom.spdx.json
+
+      - name: Upload SBOM + signature bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-and-signature
+          path: |
+            sbom.spdx.json
+            sbom.cosign.bundle
+
+  simulate-deploy:
+    name: Deploy (simulated dry-run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-scan-sign, iac-scan, dockerfile-lint]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo install kubeconform /usr/local/bin/kubeconform
+
+      - name: Render staging manifests (kustomize)
+        run: kubectl kustomize deploy/overlays/staging > rendered.yaml
+
+      - name: Validate rendered manifests (kubeconform, strict)
+        run: kubeconform -strict -summary rendered.yaml
+
+      - name: Simulated rollout
+        run: |
+          echo "── SIMULATED DEPLOY ─────────────────────────────────────"
+          echo "This is a demo pipeline: no cluster, no cloud, no deploy."
+          echo "In a real environment this job would run:"
+          echo "  kubectl apply -k deploy/overlays/staging"
+          echo "  kubectl rollout status deployment/skyhook -n skyhook-staging"
+          echo "──────────────────────────────────────────────────────────"
+          echo "Rendered $(grep -c '^kind:' rendered.yaml) Kubernetes objects for commit ${GITHUB_SHA}."
+
+      - name: Upload rendered manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-manifests
+          path: rendered.yaml
