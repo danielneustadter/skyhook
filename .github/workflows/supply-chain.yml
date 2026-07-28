@@ -87,7 +87,7 @@ jobs:
             sbom.spdx.json
 
       - name: Upload SBOM + signature bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-and-signature
           path: |
@@ -125,7 +125,7 @@ jobs:
           echo "Rendered $(grep -c '^kind:' rendered.yaml) Kubernetes objects for commit ${GITHUB_SHA}."
 
       - name: Upload rendered manifests
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rendered-manifests
           path: rendered.yaml
