@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Scan Dockerfile and Kubernetes manifests for misconfigurations
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: config
           scan-ref: .
@@ -61,7 +61,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Vulnerability scan (Trivy) — gate on CRITICAL/HIGH
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: skyhook:${{ github.sha }}
